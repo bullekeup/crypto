@@ -594,6 +594,14 @@ func (sig *Signature) SignKey(pub *PublicKey, priv *PrivateKey, config *Config) 
 	return sig.Sign(h, priv, config)
 }
 
+func (sig *Signature) CrossSignKey(pub *PublicKey, priv *PrivateKey, config *Config) error {
+	h, err := keySignatureHash(pub, &priv.PublicKey, sig.Hash)
+	if err != nil {
+		return err
+	}
+	return sig.Sign(h, priv, config)
+}
+
 // Serialize marshals sig to w. Sign, SignUserId or SignKey must have been
 // called first.
 func (sig *Signature) Serialize(w io.Writer) (err error) {
@@ -626,6 +634,23 @@ func (sig *Signature) Serialize(w io.Writer) (err error) {
 	if err != nil {
 		return
 	}
+
+	err = sig.serializeBody(w)
+	if err != nil {
+		return
+	}
+	return
+}
+
+func (sig *Signature) serializeBody(w io.Writer) (err error) {
+	if len(sig.outSubpackets) == 0 {
+		sig.outSubpackets = sig.rawSubpackets
+	}
+	if sig.RSASignature.bytes == nil && sig.DSASigR.bytes == nil && sig.ECDSASigR.bytes == nil {
+		return errors.InvalidArgumentError("Signature: need to call Sign, SignUserId or SignKey before Serialize")
+	}
+
+	unhashedSubpacketsLen := subpacketsLength(sig.outSubpackets, false)
 
 	_, err = w.Write(sig.HashSuffix[:len(sig.HashSuffix)-6])
 	if err != nil {
@@ -701,6 +726,14 @@ func (sig *Signature) buildSubpackets() (subpackets []outputSubpacket) {
 			flags |= KeyFlagEncryptStorage
 		}
 		subpackets = append(subpackets, outputSubpacket{true, keyFlagsSubpacket, false, []byte{flags}})
+	}
+
+	if sig.SigType == SigTypeSubkeyBinding && sig.FlagSign && sig.EmbeddedSignature != nil {
+		embytes := new(bytes.Buffer)
+		err := sig.EmbeddedSignature.serializeBody(embytes)
+		if err == nil {
+			subpackets = append(subpackets, outputSubpacket{false, embeddedSignatureSubpacket, true, embytes.Bytes()})
+		}
 	}
 
 	// The following subpackets may only appear in self-signatures
